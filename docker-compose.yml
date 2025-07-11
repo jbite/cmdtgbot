@@ -1,0 +1,31 @@
+version: '3.8' # Use a recent Docker Compose file format version
+
+services:
+  telegram-bot:
+    build: . # Build the Docker image from the Dockerfile in the current directory
+    container_name: your-telegram-bot-instance # Give your container a meaningful name
+
+    # Map the host's /home/video to the container's /home/video.
+    # ':ro' makes it read-only for the container, aligning with your requirement for read access.
+    # If your bot needs to write to this directory, remove ':ro'.
+    volumes:
+      - /home/video:/home/video:ro
+
+    # Define environment variables to be passed to the container.
+    # Replace the placeholder values with your actual configuration.
+    environment:
+      - TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN_HERE
+      - REMOTE_SERVER_USER=root
+      - REMOTE_PUSH_SERVER_IP=YourServerIP
+      - REMOTE_PUSH_SERVER_IP_PASSWORD=PutYourPassword
+      - VIDEO_BASE_PATH=/home/video
+      - AUTHORIZED_USER_ID=AUTHORIZED_USER_ID
+
+    # If your bot needs to expose any ports (e.g., for webhooks), define them here.
+    # For a simple polling bot, this might not be necessary.
+    # ports:
+    #   - "8080:8080" # Example: HostPort:ContainerPort
+
+    # Restart policy: always restart if the container stops.
+    # This is good for bots that should always be running.
+    restart: always
