@@ -1,34 +1,35 @@
-# Dockerfile
+# Use an official Python runtime as a parent image
+FROM python:3.9-slim-buster
 
-# 使用 Python 官方的 slim 版映像檔作為基礎，這比完整版更小，適合生產環境。
-# python:3.10-slim-bookworm 是一個不錯的選擇，基於 Debian Bookworm，提供良好的兼容性。
-FROM python:3.10-slim-bookworm
-
-# 設定工作目錄，所有後續操作都將在這個目錄下進行。
+# Set the working directory in the container
 WORKDIR /app
 
-# 複製 requirements.txt 到容器中。
-# 這樣做可以讓 Docker 在 requirements.txt 沒有改變時，快取 pip install 的結果。
+# Install system dependencies required for paramiko (SSH)
+# You might need to add more if specific SSH features are used or if your Linux distro
+# requires different packages for building certain Python wheels.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the requirements file into the container
 COPY requirements.txt .
 
-# 安裝所有 Python 依賴。
-# 使用 --no-cache-dir 可以避免產生不必要的 pip 快取，進一步縮小映像檔。
-# 注意：這裡假設 requirements.txt 包含了 telegram-python-bot 和其他所有需要的庫。
+# Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 複製所有應用程式的程式碼到容器中。
-# 這一層會在 requirements.txt 或其他文件改變時重新建置，但不會重新安裝依賴。
+# Copy the rest of the application code into the container
 COPY . .
 
-# 設定容器啟動時的預設命令。
-# ENTRYPOINT 用於設定容器啟動時執行的命令，CMD 則為其提供預設參數。
-# 這裡我們使用 entrypoint.sh 腳本來啟動我們的 Python 應用程式，
-# 這樣可以在啟動時動態傳入參數。
-# 請確保 entrypoint.sh 檔案具有執行權限。
-ENTRYPOINT ["./entrypoint.sh"]
+# Grant execute permissions to the entrypoint script
+RUN chmod +x /app/entrypoint.sh
 
-# CMD 用於為 ENTRYPOINT 提供預設參數。
-# 這些參數可以被 docker run 命令後面的參數覆寫。
-# 例如，如果你不傳遞任何參數給 docker run，它將使用這裡的預設值。
-# 但我們會在 docker-compose.yml 中直接指定完整的命令。
-CMD ["python", "cmdtgbot.py"]
+# Command to run the entrypoint script
+# CMD will execute the entrypoint.sh script which then runs your Python application.
+# ENTRYPOINT is used here to ensure your script is always run when the container starts,
+# and any CMD arguments are appended to it.
+CMD ["./entrypoint.sh"]
+
+# No CMD here as entrypoint.sh handles the command line args

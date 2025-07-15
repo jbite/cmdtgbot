@@ -1,6 +1,19 @@
 Imagine you are a 產品設計專家 with professional knowledge of App development engaging with a/an 應用開發工程師.  Please provide explanations and insights with the tone of 開發者, ensuring all information is precise and supported by verifiable evidence.		
 
 我要使用telegram-python-bot 在linux server中完成以下功能：
+- 依賴庫
+# cmdtgbot.py
+import logging
+import os
+import argparse
+paramiko
+import shlex
+import datetime
+import time
+import re
+import asyncio
+telegram-python-bot 
+
 - 我會將以下變數在運行程式時，放在執行指令中當作參數：
 	-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 	-REMOTE_SERVER_USER = "root"
@@ -26,12 +39,14 @@ Imagine you are a 產品設計專家 with professional knowledge of App developm
 - 回到"初始"
 	  - if 選項=="視頻下載":
 		- 詢問要下載的桌台，使用者回應number{1-4}
-		- 詢問下載時間點，並讓使用者選擇{時間}。
-			- 使用find 指令在{VIDEO_FILE_SERVER_IP}的{VIDEO_BASE_PATH}/bk{number}下找到在此{時間}的檔案，密碼是{VIDEO_PUSH_SERVER_IP_PASSWORD}
-		- 告訴使用者有找到檔案，告知檔名並且詢問是否傳送？
+		- 詢問下載時間點，並讓使用者選擇{時間}，不可使用今天或現在。
+			- 使用find 指令在{VIDEO_FILE_SERVER_IP}的{VIDEO_BASE_PATH}/bk0{number}下找到在此{時間}的檔案，密碼是{VIDEO_PUSH_SERVER_IP_PASSWORD}
+				- 找到在使用者提供的時間前一小時內的檔案
+				- 將檔案列表放在keyboard中讓使用者選擇要下載哪一個
+		- 使用者選擇後，詢問是否下載此檔案？
 			- 回答否，回到初始。
 			- 回答"是"，下載至機器人所在的本機. 
-			- 將這些檔案上傳給對話對象。
+			- 將此檔案上傳給對話對象。
 		- 上傳完成後，將視訊檔刪除
 		- 回到初始
 	

@@ -1,46 +1,20 @@
-# docker-compose.yml
-version: '3.8' # 指定 Docker Compose 文件的版本，推薦使用最新穩定版
+version: '3.8'
 
 services:
-  telegram_bot: # 定義一個服務，服務名稱為 telegram_bot
-    build:
-      context: . # 指定 Dockerfile 的建置上下文，'.' 表示當前目錄
-      dockerfile: Dockerfile # 指定 Dockerfile 的路徑
-    
-    container_name: video_cmd_tgbot-1 # 指定容器的名稱，方便識別和管理
-    
-    restart: unless-stopped # 設定容器的重啟策略：除非手動停止，否則會自動重啟
-    
-    # 環境變數部分，這些變數會被傳入容器中，並由 entrypoint.sh 腳本讀取
-    # 這裡的變數值應該替換成你的實際值。
-    # 為了安全起見，對於敏感資訊（如 TOKEN, PASSWORD），
-    # 實際生產環境中更推薦使用 Docker Secrets 或外部配置管理工具。
+  telegram-bot:
+    # Use 'build: .' to build the image from the Dockerfile in the current directory.
+    build: .
+    container_name: cmdtgbot
+    restart: unless-stopped # Automatically restart the container unless it's stopped manually.
     environment:
-      # Telegram Bot 的 Token，從 BotFather 獲取
-      TELEGRAM_BOT_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN" 
-      
-      # 遠端伺服器 SSH 用戶名，通常是 'root' 或有權限的用戶
-      REMOTE_SERVER_USER: "root" 
-      
-      # 遊戲網視頻推流伺服器 IP (A)
-      VIDEO_PUSH_SERVER_IP_A: "10.141.11.201" 
-      
-      # 飛投視頻推流伺服器 IP (B)
+      # These variables are injected into the container's environment.
+      # The entrypoint.sh script then passes them as command-line arguments to the Python script.
+      # For production, consider using Docker secrets or a more secure way to manage sensitive data.
+      TELEGRAM_BOT_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN" # <<< IMPORTANT: Replace with your actual bot token
+      REMOTE_SERVER_USER: "root"
+      VIDEO_PUSH_SERVER_IP_A: "10.141.11.201"
       VIDEO_PUSH_SERVER_IP_B: "10.141.11.202"
-      
-      # 視頻檔案伺服器 IP，用於下載操作
-      VIDEO_FILE_SERVER_IP: "10.141.11.201" 
-      
-      # SSH 遠端操作的密碼。
-      # 再次強調，這在生產環境中應該通過更安全的方式管理，
-      # 例如 SSH Key 或 Docker Secrets。
-      VIDEO_PUSH_SERVER_IP_PASSWORD: "VIDEO_PUSH_SERVER_IP_PASSWORD" 
-      
-      # 授權使用者的 Telegram ID 列表，多個 ID 用逗號分隔
-      AUTHORIZED_USER_IDS: "AUTHORIZED_USER_IDS_1,AUTHORIZED_USER_IDS_2" 
-      
-      # (可選) 遠端伺服器上的視頻檔案基礎路徑
-      VIDEO_BASE_PATH: "/data/video_files"
-    
-    # volumes: # 如果需要將宿主機的特定目錄掛載到容器內，可以在此配置
-      # - /path/on/host:/app/data # 例如，將宿主機的 /path/on/host 掛載到容器內的 /app/data
+      VIDEO_FILE_SERVER_IP: "10.141.11.201" # Assuming this is the same as IP_A for now
+      VIDEO_PUSH_SERVER_IP_PASSWORD: "VIDEO_PUSH_SERVER_IP_PASSWORD" # <<< IMPORTANT: Replace with your actual password
+      AUTHORIZED_USER_IDS: "AUTHORIZED_USER_IDS_1,AUTHORIZED_USER_IDS_2" # <<< IMPORTANT: Replace with your actual Telegram User IDs (e.g., "123456789,987654321")
+   
