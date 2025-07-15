@@ -1,0 +1,47 @@
+Imagine you are a 產品設計專家 with professional knowledge of App development engaging with a/an 應用開發工程師.  Please provide explanations and insights with the tone of 開發者, ensuring all information is precise and supported by verifiable evidence.		
+
+我要使用telegram-python-bot 在linux server中完成以下功能：
+- 我會將以下變數在運行程式時，放在執行指令中當作參數：
+	-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+	-REMOTE_SERVER_USER = "root"
+	-VIDEO_PUSH_SERVER_IP_A = "10.141.11.201"
+	-VIDEO_PUSH_SERVER_IP_B = "10.141.11.202"
+	-VIDEO_FILE_SERVER_IP = "10.141.11.201"
+	-VIDEO_PUSH_SERVER_IP_PASSWORD = "VIDEO_PUSH_SERVER_IP_PASSWORD"
+    -AUTHORIZED_USER_IDS="AUTHORIZED_USER_IDS_1,AUTHORIZED_USER_IDS_2"
+- 機器人只能由指定的使用者清單(由array格式輸入)來執行
+- 機器人需要固定執行以下對話流程：
+- 所有問答都加上取消動作回到初始狀態
+- 初始：
+  - 機器人：請問要執行什麼工作？
+	  - 選項{"重推"，"視頻下載"}
+	  - if 選項=="重推": 機器人詢問我要重推遊戲網視頻(VIDEO_PUSH_SERVER_IP_A)還是飛投視頻(VIDEO_PUSH_SERVER_IP_B)?
+		- 我選擇重推遊戲網視頻(VIDEO_PUSH_SERVER_IP_A)還是飛投視頻(VIDEO_PUSH_SERVER_IP_B)
+	  - 機器人:請問要重推哪一桌
+		- 我選擇number 1-4
+	  - 機器人確認我是否重推所選網站的number桌，如果"是"
+			- server execute: ssh {REMOTE_SERVER_USER}@{VIDEO_PUSH_SERVER_IP_{A or B}} docker restart streaming_script-ffmpeg_bk0{number}-1
+			- 密碼: {VIDEO_PUSH_SERVER_IP_PASSWORD}
+		- 如果"否"：退回"初始"
+- 回到"初始"
+	  - if 選項=="視頻下載":
+		- 詢問要下載的桌台，使用者回應number{1-4}
+		- 詢問下載時間點，並讓使用者選擇{時間}。
+			- 使用find 指令在{VIDEO_FILE_SERVER_IP}的{VIDEO_BASE_PATH}/bk{number}下找到在此{時間}的檔案，密碼是{VIDEO_PUSH_SERVER_IP_PASSWORD}
+		- 告訴使用者有找到檔案，告知檔名並且詢問是否傳送？
+			- 回答否，回到初始。
+			- 回答"是"，下載至機器人所在的本機. 
+			- 將這些檔案上傳給對話對象。
+		- 上傳完成後，將視訊檔刪除
+		- 回到初始
+	
+	
+	
+=========創建主程式cmdtgbot.py、Dockerfile、requirements.txt、entrypoint.sh、docker-compose文件====
+- 此程式會放在docker container中，container將會運行cmdtgbot.py+指定所需要的參數運行，並且由entrypoint.sh運行
+    - 例如：python cmdtgbot.py --token "TELEGRAM_BOT_TOKEN" --user "REMOTE_SERVER_USER" --VIDEO_PUSH_SERVER_IP_A "VIDEO_PUSH_SERVER_IP_a" --VIDEO_PUSH_SERVER_IP_B VIDEO_PUSH_SERVER_IP_B --password "VIDEO_PUSH_SERVER_IP_PASSWORD"  --auth_id "AUTHORIZED_USER_IDS"
+- 將這些程序的系統變數放在docker-compose中寫入container中，以利主程式讀入
+- 創建一個docker image ， 安裝python telegram-python-bot，及其他依賴庫
+
+以上產出只給我檔名加產出文件內容，不用額外解釋，如果有，請放在文件中的註釋。如果了解，跟我說"確認"，不要給我文件，直到我請您輸出文件內容並指定檔名
+

@@ -1,436 +1,541 @@
-# -*- coding: utf-8 -*-
-import argparse
 import logging
 import os
-import re
+import argparse
 import asyncio
-from datetime import datetime, timedelta
+import datetime
+import re
 
-# 引入 Telegram Bot 相關庫
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     filters,
+    ContextTypes,
     ConversationHandler,
 )
 
-# 引入 Paramiko 庫用於 SSH 連線
-# 如果尚未安裝，請執行：pip install paramiko
+# 導入 Paramiko 模組
 import paramiko
 
-# 設定日誌記錄
+# Enable logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# 定義對話狀態
-CHOOSING_TASK, RESTART_TABLE, RESTART_CONFIRM, DOWNLOAD_TABLE, DOWNLOAD_TIME, DOWNLOAD_CONFIRM_SEND = range(6)
+# States for the conversation handler
+(
+    SELECT_ACTION,
+    SELECT_PUSH_SERVER,
+    SELECT_TABLE_FOR_PUSH,
+    CONFIRM_PUSH,
+    SELECT_TABLE_FOR_DOWNLOAD,
+    SELECT_DOWNLOAD_TIME,
+    SELECT_FILE_FOR_DOWNLOAD, # New state for file selection
+    CONFIRM_DOWNLOAD,
+) = range(8) # Updated range to include new state
 
-# 全局變數，用於儲存從命令列參數獲取的值
+# Global variables loaded from environment or command line arguments
 TELEGRAM_BOT_TOKEN = None
 REMOTE_SERVER_USER = None
-REMOTE_PUSH_SERVER_IP = None
-REMOTE_PUSH_SERVER_IP_PASSWORD = None
+VIDEO_PUSH_SERVER_IP_A = None
+VIDEO_PUSH_SERVER_IP_B = None
+VIDEO_FILE_SERVER_IP = None
+VIDEO_PUSH_SERVER_IP_PASSWORD = None
+AUTHORIZED_USER_IDS = [] # 將從命令行參數解析為列表
 VIDEO_BASE_PATH = None
-AUTHORIZED_USER_ID = None # 這裡需要填寫您自己的 Telegram User ID，請參閱下方說明如何獲取
 
-# --- 輔助函數 ---
+# --- Utility Functions ---
 
-def is_authorized(update: Update) -> bool:
-    """
-    檢查使用者是否為授權使用者。
-    """
-    if update.effective_user.id == AUTHORIZED_USER_ID:
-        return True
-    logger.warning(f"未授權的使用者嘗試訪問: {update.effective_user.id}")
-    update.message.reply_text("抱歉，您沒有權限執行此操作。")
-    return False
+async def is_authorized(update: Update) -> bool:
+    """Check if the user is authorized to use the bot."""
+    user_id = str(update.effective_user.id)
+    if user_id not in AUTHORIZED_USER_IDS:
+        logger.warning(f"Unauthorized access attempt from user ID: {user_id}")
+        await update.message.reply_text("抱歉，您沒有權限執行此操作。")
+        return False
+    return True
 
-async def run_remote_command(command: str) -> tuple[int, str, str]:
+async def run_ssh_command(host: str, user: str, password: str, command: str) -> tuple[int, str, str]:
     """
-    使用 Paramiko 執行遠端 SSH 命令。
-    返回 (exit_status, stdout, stderr)。
+    Executes an SSH command on a remote server using Paramiko.
+    Returns (return_code, stdout, stderr).
     """
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy()) # 自動添加主機金鑰，首次連線時可能需要確認
+    ssh_client = paramiko.SSHClient()
+    # 自動添加未知主機的 key，這在測試環境中很方便。
+    # ❗️生產環境中，建議載入系統的 known_hosts 或明確指定已知主機金鑰，
+    # 例如 ssh_client.load_system_host_keys() 或 ssh_client.load_host_keys('path/to/known_hosts')
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
     try:
-        logger.info(f"嘗試連線到 {REMOTE_PUSH_SERVER_IP} 並執行命令: {command}")
-        client.connect(
-            hostname=REMOTE_PUSH_SERVER_IP,
-            username=REMOTE_SERVER_USER,
-            password=REMOTE_PUSH_SERVER_IP_PASSWORD,
-            timeout=10 # 連線逾時設定
-        )
-        stdin, stdout, stderr = client.exec_command(command)
-        exit_status = stdout.channel.recv_exit_status() # 等待命令執行完成並獲取退出狀態
-        output = stdout.read().decode('utf-8').strip()
-        error = stderr.read().decode('utf-8').strip()
-        logger.info(f"命令執行完成，退出狀態: {exit_status}")
-        if output:
-            logger.info(f"標準輸出: {output}")
-        if error:
-            logger.error(f"標準錯誤: {error}")
-        return exit_status, output, error
+        logger.info(f"Connecting to SSH host {user}@{host}")
+        ssh_client.connect(hostname=host, username=user, password=password, timeout=10) # 增加 timeout 防止無限等待
+        logger.info(f"Executing command on {host}: {command}")
+        
+        # 執行命令
+        stdin, stdout, stderr = ssh_client.exec_command(command)
+        
+        # 讀取輸出，等待命令完成
+        stdout_str = stdout.read().decode().strip()
+        stderr_str = stderr.read().decode().strip()
+        
+        # 獲取命令的退出狀態碼
+        exit_status = stdout.channel.recv_exit_status() 
+        
+        logger.info(f"Command on {host} finished with exit status: {exit_status}")
+        if stdout_str:
+            logger.debug(f"STDOUT: {stdout_str}")
+        if stderr_str:
+            logger.debug(f"STDERR: {stderr_str}")
+
+        return exit_status, stdout_str, stderr_str
+
     except paramiko.AuthenticationException:
-        logger.error("SSH 認證失敗，請檢查使用者名稱和密碼。")
-        return -1, "", "SSH 認證失敗。"
+        logger.error(f"Authentication failed for {user}@{host}. Please check credentials.")
+        return 1, "", "認證失敗，請檢查用戶名和密碼。"
     except paramiko.SSHException as e:
-        logger.error(f"SSH 連線或執行命令時發生錯誤: {e}")
-        return -1, "", f"SSH 錯誤: {e}"
+        logger.error(f"SSH connection failed or command execution error on {host}: {e}")
+        return 1, "", f"SSH 連線或執行命令錯誤: {e}"
     except Exception as e:
-        logger.error(f"執行遠端命令時發生未知錯誤: {e}")
-        return -1, "", f"未知錯誤: {e}"
+        logger.error(f"General error running SSH command on {host}: {e}")
+        return 1, "", f"發生未知錯誤: {e}"
     finally:
-        client.close()
+        if ssh_client:
+            ssh_client.close() # 確保 SSH 連線被關閉
 
-async def download_remote_file(remote_path: str, local_path: str) -> bool:
-    """
-    使用 Paramiko 的 SFTP 客戶端從遠端伺服器下載檔案。
-    """
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        logger.info(f"嘗試連線到 {REMOTE_PUSH_SERVER_IP} 並下載檔案: {remote_path} 到 {local_path}")
-        client.connect(
-            hostname=REMOTE_PUSH_SERVER_IP,
-            username=REMOTE_SERVER_USER,
-            password=REMOTE_PUSH_SERVER_IP_PASSWORD,
-            timeout=10
-        )
-        sftp = client.open_sftp()
-        sftp.get(remote_path, local_path)
-        sftp.close()
-        logger.info(f"檔案下載成功: {remote_path}")
-        return True
-    except paramiko.AuthenticationException:
-        logger.error("SFTP 認證失敗，請檢查使用者名稱和密碼。")
-        return False
-    except paramiko.SSHException as e:
-        logger.error(f"SFTP 連線或下載檔案時發生錯誤: {e}")
-        return False
-    except FileNotFoundError:
-        logger.error(f"遠端檔案不存在: {remote_path}")
-        return False
-    except Exception as e:
-        logger.error(f"下載遠端檔案時發生未知錯誤: {e}")
-        return False
-    finally:
-        client.close()
+# --- Conversation Entry Point ---
 
-# --- 命令處理器 ---
-
-async def start(update: Update, context: Application) -> int:
-    """
-    處理 /start 命令，啟動對話。
-    """
-    if not is_authorized(update):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the conversation and asks the user what to do."""
+    if not await is_authorized(update):
         return ConversationHandler.END
 
     reply_keyboard = [["重推", "視頻下載"]]
     await update.message.reply_text(
         "請問要執行什麼工作？",
         reply_markup=ReplyKeyboardMarkup(
-            reply_keyboard, one_time_keyboard=True, input_field_placeholder="請選擇工作："
+            reply_keyboard, one_time_keyboard=True, input_field_placeholder="選擇操作"
         ),
     )
-    return CHOOSING_TASK
+    return SELECT_ACTION
 
-async def choose_task(update: Update, context: Application) -> int:
-    """
-    處理使用者選擇的工作類型。
-    """
-    if not is_authorized(update):
-        return ConversationHandler.END
-
-    text = update.message.text
-    context.user_data["choice"] = text
-
-    if text == "重推":
-        reply_keyboard = [["1", "2", "3", "4"]]
-        await update.message.reply_text(
-            "請問要重推哪一桌？(1-4)",
-            reply_markup=ReplyKeyboardMarkup(
-                reply_keyboard, one_time_keyboard=True, input_field_placeholder="請選擇桌號："
-            ),
-        )
-        return RESTART_TABLE
-    elif text == "視頻下載":
-        reply_keyboard = [["1", "2", "3", "4"]]
-        await update.message.reply_text(
-            "請問要下載哪一桌的視頻？(1-4)",
-            reply_markup=ReplyKeyboardMarkup(
-                reply_keyboard, one_time_keyboard=True, input_field_placeholder="請選擇桌號："
-            ),
-        )
-        return DOWNLOAD_TABLE
-    else:
-        await update.message.reply_text("無效的選項，請重新選擇。", reply_markup=ReplyKeyboardRemove())
-        return await start(update, context) # 返回初始狀態
-
-async def restart_table(update: Update, context: Application) -> int:
-    """
-    處理使用者選擇的重推桌號。
-    """
-    if not is_authorized(update):
-        return ConversationHandler.END
-
-    table_num = update.message.text
-    if not table_num.isdigit() or not (1 <= int(table_num) <= 4):
-        await update.message.reply_text("無效的桌號，請輸入 1 到 4 之間的數字。")
-        return RESTART_TABLE # 保持在當前狀態，讓使用者重新輸入
-
-    context.user_data["table_num"] = table_num
-    reply_keyboard = [["是", "否"]]
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels and ends the conversation."""
+    logger.info(f"User {update.effective_user.id} cancelled the operation.")
     await update.message.reply_text(
-        f"您確定要重推 {table_num} 號桌嗎？",
-        reply_markup=ReplyKeyboardMarkup(
-            reply_keyboard, one_time_keyboard=True, input_field_placeholder="請確認："
-        ),
+        "操作已取消，回到初始狀態。", reply_markup=ReplyKeyboardRemove()
     )
-    return RESTART_CONFIRM
-
-async def restart_confirm(update: Update, context: Application) -> int:
-    """
-    確認重推操作並執行遠端命令。
-    """
-    if not is_authorized(update):
-        return ConversationHandler.END
-
-    confirmation = update.message.text
-    table_num = context.user_data["table_num"]
-
-    if confirmation == "是":
-        command = f"docker restart streaming_script-ffmpeg_bk0{table_num}-1"
-        full_command = f"ssh {REMOTE_SERVER_USER}@{REMOTE_PUSH_SERVER_IP} {command}"
-        await update.message.reply_text(f"正在執行重推命令：`{full_command}`...", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
-        
-        exit_status, stdout, stderr = await run_remote_command(command)
-
-        if exit_status == 0:
-            await update.message.reply_text(f"{table_num} 號桌重推成功！\n輸出：\n`{stdout}`", parse_mode="Markdown")
-        else:
-            error_message = f"{table_num} 號桌重推失敗！\n錯誤：\n`{stderr}`"
-            if stdout:
-                error_message += f"\n輸出：\n`{stdout}`"
-            await update.message.reply_text(error_message, parse_mode="Markdown")
-    else:
-        await update.message.reply_text("已取消重推操作。", reply_markup=ReplyKeyboardRemove())
-
-    return await start(update, context) # 返回初始狀態
-
-async def download_table(update: Update, context: Application) -> int:
-    """
-    處理使用者選擇的視頻下載桌號。
-    """
-    if not is_authorized(update):
-        return ConversationHandler.END
-
-    table_num = update.message.text
-    if not table_num.isdigit() or not (1 <= int(table_num) <= 4):
-        await update.message.reply_text("無效的桌號，請輸入 1 到 4 之間的數字。")
-        return DOWNLOAD_TABLE # 保持在當前狀態，讓使用者重新輸入
-
-    context.user_data["table_num"] = table_num
-    await update.message.reply_text(
-        "請輸入要下載視頻的時間點 (例如: 2023-10-27 15:30:00)。\n"
-        "我們將搜尋該時間點前後約 1 分鐘的檔案。",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return DOWNLOAD_TIME
-
-async def download_time(update: Update, context: Application) -> int:
-    """
-    處理使用者輸入的下載時間點，並搜尋檔案。
-    """
-    if not is_authorized(update):
-        return ConversationHandler.END
-
-    time_str = update.message.text
-    try:
-        # 嘗試解析時間字串
-        search_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        await update.message.reply_text("時間格式無效，請使用 YYYY-MM-DD HH:MM:SS 格式。")
-        return DOWNLOAD_TIME # 保持在當前狀態，讓使用者重新輸入
-
-    table_num = context.user_data["table_num"]
-    remote_video_dir = os.path.join(VIDEO_BASE_PATH, f"bk{table_num}")
-
-    # 構建 find 命令，搜尋指定時間點前後約 1 分鐘的 .mp4 檔案
-    # 注意：find 的 -newermt 選項是基於修改時間。
-    # 我們將搜尋從 search_time - 1 分鐘 到 search_time + 1 分鐘 之間的檔案。
-    start_time_str = (search_time - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
-    end_time_str = (search_time + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
-
-    # 為了避免 find 指令中的空格問題，使用單引號包圍時間字串
-    find_command = (
-        f"find '{remote_video_dir}' -type f -name '*.mp4' "
-        f"-newermt '{start_time_str}' ! -newermt '{end_time_str}'"
-    )
-    
-    await update.message.reply_text(f"正在搜尋遠端伺服器上的視頻檔案，請稍候...", reply_markup=ReplyKeyboardRemove())
-    
-    exit_status, stdout, stderr = await run_remote_command(find_command)
-
-    if exit_status == 0 and stdout:
-        found_files = stdout.splitlines()
-        context.user_data["found_files"] = found_files
-        file_list_str = "\n".join([os.path.basename(f) for f in found_files])
-        reply_keyboard = [["是", "否"]]
-        await update.message.reply_text(
-            f"找到以下檔案：\n`{file_list_str}`\n\n是否要傳送這些檔案？",
-            parse_mode="Markdown",
-            reply_markup=ReplyKeyboardMarkup(
-                reply_keyboard, one_time_keyboard=True, input_field_placeholder="請確認："
-            ),
-        )
-        return DOWNLOAD_CONFIRM_SEND
-    else:
-        await update.message.reply_text(
-            f"未找到符合條件的視頻檔案，或搜尋時發生錯誤。\n錯誤訊息：`{stderr}`",
-            parse_mode="Markdown",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return await start(update, context) # 返回初始狀態
-
-async def download_confirm_send(update: Update, context: Application) -> int:
-    """
-    確認是否傳送檔案，並執行下載、上傳和刪除操作。
-    """
-    if not is_authorized(update):
-        return ConversationHandler.END
-
-    confirmation = update.message.text
-    found_files = context.user_data.get("found_files", [])
-
-    if confirmation == "是" and found_files:
-        await update.message.reply_text("正在下載並傳送檔案，請稍候...", reply_markup=ReplyKeyboardRemove())
-        
-        local_download_dir = "./temp_downloads"
-        os.makedirs(local_download_dir, exist_ok=True) # 確保本地下載目錄存在
-
-        all_downloads_successful = True
-        for remote_file_path in found_files:
-            local_file_name = os.path.basename(remote_file_path)
-            local_file_path = os.path.join(local_download_dir, local_file_name)
-
-            if await download_remote_file(remote_file_path, local_file_path):
-                try:
-                    await update.message.reply_document(document=open(local_file_path, 'rb'))
-                    logger.info(f"檔案 {local_file_name} 已上傳。")
-                except Exception as e:
-                    logger.error(f"上傳檔案 {local_file_name} 時發生錯誤: {e}")
-                    await update.message.reply_text(f"上傳檔案 {local_file_name} 失敗。")
-                    all_downloads_successful = False
-                finally:
-                    # 無論上傳成功與否，都嘗試刪除本地檔案
-                    if os.path.exists(local_file_path):
-                        os.remove(local_file_path)
-                        logger.info(f"本地檔案 {local_file_name} 已刪除。")
-            else:
-                all_downloads_successful = False
-                await update.message.reply_text(f"下載遠端檔案 {remote_file_path} 失敗。")
-
-        # 清理本地下載目錄 (如果為空)
-        if not os.listdir(local_download_dir):
-            os.rmdir(local_download_dir)
-
-        if all_downloads_successful:
-            await update.message.reply_text("所有視頻檔案已成功傳送並清理。")
-        else:
-            await update.message.reply_text("部分檔案傳送失敗，請檢查日誌。")
-
-    else:
-        await update.message.reply_text("已取消視頻傳送。", reply_markup=ReplyKeyboardRemove())
-
-    return await start(update, context) # 返回初始狀態
-
-async def cancel(update: Update, context: Application) -> int:
-    """
-    處理 /cancel 命令，結束對話。
-    """
-    if not is_authorized(update):
-        return ConversationHandler.END
-
-    await update.message.reply_text(
-        "操作已取消。", reply_markup=ReplyKeyboardRemove()
-    )
+    # 將上下文的數據清除，確保下次從頭開始
+    if "user_data" in context:
+        context.user_data.clear()
     return ConversationHandler.END
 
-async def handle_unauthorized(update: Update, context: Application):
-    """
-    處理未授權使用者的訊息。
-    """
-    if not is_authorized(update):
-        # 訊息已在 is_authorized 函數中處理，這裡只需確保不進入其他對話流程
-        return
+# --- 重推 (Re-push) Flow ---
 
-# --- 主函數 ---
+async def select_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Asks the user to select the push server or proceeds to video download."""
+    if not await is_authorized(update):
+        return ConversationHandler.END
 
-def main():
-    """
-    主函數，啟動 Telegram Bot。
-    """
-    global TELEGRAM_BOT_TOKEN, REMOTE_SERVER_USER, REMOTE_PUSH_SERVER_IP, REMOTE_PUSH_SERVER_IP_PASSWORD, VIDEO_BASE_PATH, AUTHORIZED_USER_ID
+    user_choice = update.message.text
+    if user_choice == "重推":
+        reply_keyboard = [["重推遊戲網視頻 (A)", "重推飛投視頻 (B)"], ["取消"]]
+        await update.message.reply_text(
+            "機器人詢問我要重推遊戲網視頻(VIDEO_PUSH_SERVER_IP_A)還是飛投視頻(VIDEO_PUSH_SERVER_IP_B)?",
+            reply_markup=ReplyKeyboardMarkup(
+                reply_keyboard, one_time_keyboard=True, input_field_placeholder="選擇視頻類型"
+            ),
+        )
+        return SELECT_PUSH_SERVER
+    elif user_choice == "視頻下載":
+        reply_keyboard = [["1", "2", "3", "4"], ["取消"]]
+        await update.message.reply_text(
+            "詢問要下載的桌台，請選擇數字 (1-4)：",
+            reply_markup=ReplyKeyboardMarkup(
+                reply_keyboard, one_time_keyboard=True, input_field_placeholder="選擇桌台"
+            ),
+        )
+        return SELECT_TABLE_FOR_DOWNLOAD
+    else:
+        await update.message.reply_text("無效的選擇，請重新選擇。", reply_markup=ReplyKeyboardRemove())
+        return await start(update, context) # Go back to start
 
-    parser = argparse.ArgumentParser(description="Telegram Bot for remote server management.")
-    parser.add_argument("--token", required=True, help="Your Telegram Bot Token.")
-    parser.add_argument("--user", required=True, help="Remote server SSH username (e.g., root).")
-    parser.add_argument("--ip", required=True, help="Remote server IP address.")
-    parser.add_argument("--password", required=True, help="Remote server SSH password.")
-    parser.add_argument("--video_path", required=True, help="Base path for video files on the remote server (e.g., /home/video).")
-    parser.add_argument("--auth_id", type=int, required=True, help="Your Telegram User ID (integer) for authorization.")
+async def select_push_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stores the selected push server and asks for the table number."""
+    if not await is_authorized(update):
+        return ConversationHandler.END
+
+    user_choice = update.message.text
+    if user_choice == "重推遊戲網視頻 (A)":
+        context.user_data["push_server_ip"] = VIDEO_PUSH_SERVER_IP_A
+        context.user_data["server_type"] = "A"
+    elif user_choice == "重推飛投視頻 (B)":
+        context.user_data["push_server_ip"] = VIDEO_PUSH_SERVER_IP_B
+        context.user_data["server_type"] = "B"
+    else:
+        await update.message.reply_text("無效的選擇，請重新選擇。", reply_markup=ReplyKeyboardRemove())
+        return await start(update, context) # Go back to start
+
+    reply_keyboard = [["1", "2", "3", "4"], ["取消"]]
+    await update.message.reply_text(
+        "請問要重推哪一桌？請選擇數字 (1-4)：",
+        reply_markup=ReplyKeyboardMarkup(
+            reply_keyboard, one_time_keyboard=True, input_field_placeholder="選擇桌號"
+        ),
+    )
+    return SELECT_TABLE_FOR_PUSH
+
+async def select_table_for_push(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stores the table number and asks for confirmation."""
+    if not await is_authorized(update):
+        return ConversationHandler.END
+
+    table_number = update.message.text
+    if not table_number.isdigit() or not (1 <= int(table_number) <= 4):
+        await update.message.reply_text("無效的桌號，請輸入1到4之間的數字。", reply_markup=ReplyKeyboardRemove())
+        return await select_push_server(update, context) # Go back to select push server if invalid table
+
+    context.user_data["table_number"] = table_number
+    server_type = context.user_data.get("server_type", "未知")
+
+    reply_keyboard = [["是", "否"]]
+    await update.message.reply_text(
+        f"您是否確認要重推 {server_type} 伺服器的第 {table_number} 桌？",
+        reply_markup=ReplyKeyboardMarkup(
+            reply_keyboard, one_time_keyboard=True, input_field_placeholder="確認"
+        ),
+    )
+    return CONFIRM_PUSH
+
+async def confirm_push(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Confirms and executes the push command."""
+    if not await is_authorized(update):
+        return ConversationHandler.END
+
+    confirmation = update.message.text
+    if confirmation == "是":
+        server_ip = context.user_data["push_server_ip"]
+        table_number = context.user_data["table_number"]
+        server_type = context.user_data["server_type"]
+
+        command = f"docker restart streaming_script-ffmpeg_bk0{table_number}-1"
+        await update.message.reply_text(f"正在 {server_ip} 上執行重推第 {table_number} 桌的指令，請稍候...")
+
+        return_code, stdout, stderr = await run_ssh_command(
+            host=server_ip,
+            user=REMOTE_SERVER_USER,
+            password=VIDEO_PUSH_SERVER_IP_PASSWORD,
+            command=command
+        )
+
+        if return_code == 0:
+            await update.message.reply_text(f"重推 {server_type} 伺服器第 {table_number} 桌成功！\nSTDOUT:\n{stdout}")
+        else:
+            error_message = stderr if stderr else "未知錯誤"
+            await update.message.reply_text(f"重推 {server_type} 伺服器第 {table_number} 桌失敗！\n錯誤: {error_message}")
+    else:
+        await update.message.reply_text("已取消重推操作。")
+
+    return await start(update, context) # Go back to start
+
+# --- 視頻下載 (Video Download) Flow ---
+
+async def select_table_for_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stores the table number for download and asks for the download time."""
+    if not await is_authorized(update):
+        return ConversationHandler.END
+
+    table_number = update.message.text
+    if not table_number.isdigit() or not (1 <= int(table_number) <= 4):
+        await update.message.reply_text("無效的桌號，請輸入1到4之間的數字。", reply_markup=ReplyKeyboardRemove())
+        return await select_action(update, context) # Go back to action selection if invalid table
+
+    context.user_data["download_table_number"] = table_number
+    await update.message.reply_text("請輸入要下載的時間點 (例如：`YYYY-MM-DD HH:MM` 或 `HH:MM`)。")
+    return SELECT_DOWNLOAD_TIME
+
+async def select_download_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Finds video files based on time and asks for selection."""
+    if not await is_authorized(update):
+        return ConversationHandler.END
+
+    time_input = update.message.text.strip()
+    table_number = context.user_data["download_table_number"]
+    
+    search_dir = os.path.join(VIDEO_BASE_PATH, f"bk0{table_number}")
+    
+    target_datetime = None
+    try:
+        # 嘗試解析為完整的日期時間 YYYY-MM-DD HH:MM
+        target_datetime = datetime.datetime.strptime(time_input, "%Y-%m-%d %H:%M")
+    except ValueError:
+        try:
+            # 嘗試解析為時間 HH:MM (假設是今天)
+            current_date = datetime.date.today()
+            target_time = datetime.datetime.strptime(time_input, "%H:%M").time()
+            target_datetime = datetime.datetime.combine(current_date, target_time)
+        except ValueError:
+            await update.message.reply_text("無效的時間格式。請輸入 'YYYY-MM-DD HH:MM' 或 'HH:MM' 格式。", reply_markup=ReplyKeyboardRemove())
+            return await select_table_for_download(update, context) # Go back to select table for download
+
+    # Calculate time window: one hour before and one hour after
+    start_time_window = target_datetime - datetime.timedelta(hours=1)
+    end_time_window = target_datetime + datetime.timedelta(hours=1)
+
+    # Use find command to search for files within the time range
+    # This is a bit tricky with `find` alone for time *ranges*.
+    # A more robust approach might be to list all files and then filter in Python,
+    # or use a more complex `find` command with -newermt.
+    # For now, let's list all files in the directory and filter in Python.
+
+    list_command = f"find {search_dir} -type f -name 'output_*.mp4' -printf '%f\\n'" # Get only filename
+    
+    await update.message.reply_text(f"正在 {VIDEO_FILE_SERVER_IP} 的 {search_dir} 目錄下搜尋檔案，請稍候...")
+
+    return_code, stdout, stderr = await run_ssh_command(
+        host=VIDEO_FILE_SERVER_IP,
+        user=REMOTE_SERVER_USER,
+        password=VIDEO_PUSH_SERVER_IP_PASSWORD,
+        command=list_command
+    )
+
+    if return_code != 0 and stderr:
+        await update.message.reply_text(f"搜尋檔案時發生錯誤：\n{stderr}")
+        return await start(update, context) # Go back to start
+    
+    all_files = [f for f in stdout.split('\n') if f.strip()]
+    
+    found_files_in_range = []
+    # Regex to extract datetime from filename: output_YYYY-MM-DD_HH-MM-SS.mp4
+    filename_regex = re.compile(r"output_(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})\.mp4")
+
+    for filename in all_files:
+        match = filename_regex.match(filename)
+        if match:
+            date_part = match.group(1)
+            time_part = match.group(2).replace('-', ':') # Change to HH:MM:SS
+            try:
+                file_datetime = datetime.datetime.strptime(f"{date_part}_{time_part}", "%Y-%m-%d_%H:%M:%S")
+                if start_time_window <= file_datetime <= end_time_window:
+                    found_files_in_range.append(os.path.join(search_dir, filename))
+            except ValueError:
+                logger.warning(f"Could not parse datetime from filename: {filename}")
+                continue
+
+    if not found_files_in_range:
+        await update.message.reply_text("沒有找到符合條件的檔案。")
+        return await start(update, context) # Go back to start
+
+    context.user_data["found_files_for_selection"] = found_files_in_range
+    
+    file_options = [[os.path.basename(f)] for f in found_files_in_range]
+    file_options.append(["取消"]) # Add cancel option
+    
+    await update.message.reply_text(
+        "已找到以下檔案，請選擇一個進行下載：",
+        reply_markup=ReplyKeyboardMarkup(
+            file_options, one_time_keyboard=True, input_field_placeholder="選擇檔案"
+        ),
+    )
+    return SELECT_FILE_FOR_DOWNLOAD
+
+async def select_file_for_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stores the selected file for download and asks for confirmation."""
+    if not await is_authorized(update):
+        return ConversationHandler.END
+
+    selected_filename = update.message.text
+    found_files = context.user_data.get("found_files_for_selection", [])
+    
+    selected_full_path = None
+    for f_path in found_files:
+        if os.path.basename(f_path) == selected_filename:
+            selected_full_path = f_path
+            break
+    
+    if not selected_full_path:
+        await update.message.reply_text("無效的檔案選擇，請重新選擇或取消。", reply_markup=ReplyKeyboardRemove())
+        # Re-offer the file selection
+        file_options = [[os.path.basename(f)] for f in found_files]
+        file_options.append(["取消"])
+        await update.message.reply_text(
+            "請選擇一個檔案：",
+            reply_markup=ReplyKeyboardMarkup(
+                file_options, one_time_keyboard=True, input_field_placeholder="選擇檔案"
+            ),
+        )
+        return SELECT_FILE_FOR_DOWNLOAD
+    
+    context.user_data["selected_file_to_download"] = selected_full_path
+
+    reply_keyboard = [["是", "否"]]
+    await update.message.reply_text(
+        f"您是否確認要傳送檔案 `{selected_filename}`？",
+        reply_markup=ReplyKeyboardMarkup(
+            reply_keyboard, one_time_keyboard=True, input_field_placeholder="確認傳送"
+        ),
+    )
+    return CONFIRM_DOWNLOAD
+
+
+async def confirm_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Downloads, uploads, and cleans up the selected file."""
+    if not await is_authorized(update):
+        return ConversationHandler.END
+
+    confirmation = update.message.text
+    if confirmation == "是":
+        remote_file_path = context.user_data.get("selected_file_to_download")
+        if not remote_file_path:
+            await update.message.reply_text("沒有找到要下載的檔案。")
+            return await start(update, context)
+
+        file_name = os.path.basename(remote_file_path)
+        local_path = os.path.join("/tmp", file_name) # 下載到 /tmp 目錄
+        
+        await update.message.reply_text(f"開始下載檔案 `{file_name}` 到機器人本地...")
+
+        try:
+            ssh_client = paramiko.SSHClient()
+            ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh_client.connect(hostname=VIDEO_FILE_SERVER_IP, username=REMOTE_SERVER_USER, password=VIDEO_PUSH_SERVER_IP_PASSWORD, timeout=10)
+            
+            sftp_client = ssh_client.open_sftp()
+            sftp_client.get(remote_file_path, local_path)
+            sftp_client.close()
+            ssh_client.close()
+
+            await update.message.reply_text(f"檔案 `{file_name}` 下載完成。開始上傳至 Telegram...")
+            
+            try:
+                with open(local_path, 'rb') as f:
+                    await update.message.reply_document(document=f)
+                await update.message.reply_text(f"檔案 `{file_name}` 上傳成功。")
+            except Exception as e:
+                await update.message.reply_text(f"上傳檔案 `{file_name}` 時發生錯誤：{e}")
+                logger.error(f"Error uploading {local_path} to Telegram: {e}")
+            finally:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                    logger.info(f"Deleted local file: {local_path}")
+                await update.message.reply_text("本地檔案已清除。")
+
+        except paramiko.AuthenticationException:
+            await update.message.reply_text(f"下載檔案 `{file_name}` 失敗：認證錯誤，請檢查伺服器設定。")
+            logger.error(f"SFTP Authentication failed for {REMOTE_SERVER_USER}@{VIDEO_FILE_SERVER_IP}.")
+        except paramiko.SSHException as e:
+            await update.message.reply_text(f"下載檔案 `{file_name}` 失敗：SSH 連線或 SFTP 錯誤: {e}")
+            logger.error(f"SFTP connection/transfer error for {file_name}: {e}")
+        except FileNotFoundError:
+            await update.message.reply_text(f"下載檔案 `{file_name}` 失敗：遠端檔案不存在或路徑錯誤。")
+            logger.error(f"Remote file not found: {remote_file_path}")
+        except Exception as e:
+            await update.message.reply_text(f"下載檔案 `{file_name}` 時發生未知錯誤：{e}")
+            logger.error(f"Error downloading {file_name} via SFTP: {e}")
+    else:
+        await update.message.reply_text("已取消視訊下載操作。")
+
+    return await start(update, context) # Go back to start
+
+def main() -> None:
+    """Start the bot."""
+    # Parse command line arguments first
+    parser = argparse.ArgumentParser(description="Telegram Bot for server operations.")
+    parser.add_argument("--token", required=True, help="Telegram Bot Token")
+    parser.add_argument("--user", required=True, help="Remote Server User (e.g., root)")
+    parser.add_argument("--VIDEO_PUSH_SERVER_IP_A", required=True, help="IP of Video Push Server A")
+    parser.add_argument("--VIDEO_PUSH_SERVER_IP_B", required=True, help="IP of Video Push Server B")
+    parser.add_argument("--VIDEO_FILE_SERVER_IP", required=True, help="IP of Video File Server")
+    parser.add_argument("--password", required=True, help="Password for SSH connections")
+    parser.add_argument("--auth_id", required=True, help="Comma-separated authorized user IDs")
+    parser.add_argument("--video_base_path", default="/home/video", help="Base path for video files on the remote server")
 
     args = parser.parse_args()
 
+    global TELEGRAM_BOT_TOKEN, REMOTE_SERVER_USER, VIDEO_PUSH_SERVER_IP_A, \
+           VIDEO_PUSH_SERVER_IP_B, VIDEO_FILE_SERVER_IP, VIDEO_PUSH_SERVER_IP_PASSWORD, \
+           AUTHORIZED_USER_IDS, VIDEO_BASE_PATH
+    
     TELEGRAM_BOT_TOKEN = args.token
     REMOTE_SERVER_USER = args.user
-    REMOTE_PUSH_SERVER_IP = args.ip
-    REMOTE_PUSH_SERVER_IP_PASSWORD = args.password
-    VIDEO_BASE_PATH = args.video_path
-    AUTHORIZED_USER_ID = args.auth_id
+    VIDEO_PUSH_SERVER_IP_A = args.VIDEO_PUSH_SERVER_IP_A
+    VIDEO_PUSH_SERVER_IP_B = args.VIDEO_PUSH_SERVER_IP_B
+    VIDEO_FILE_SERVER_IP = args.VIDEO_FILE_SERVER_IP
+    VIDEO_PUSH_SERVER_IP_PASSWORD = args.password
+    # 將逗號分隔的字符串解析為列表
+    AUTHORIZED_USER_IDS = [uid.strip() for uid in args.auth_id.split(',') if uid.strip()]
+    VIDEO_BASE_PATH = args.video_base_path
 
-    # 創建 Application 並傳入 Bot Token
+    if not AUTHORIZED_USER_IDS:
+        logger.error("No authorized user IDs provided. The bot will not respond to anyone.")
+    else:
+        logger.info(f"Bot starting with authorized users: {AUTHORIZED_USER_IDS}")
+
+    # Create the Application and pass your bot's token.
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # 定義對話處理器
+    # Define conversation handler with states
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSING_TASK: [
-                MessageHandler(filters.Regex("^(重推|視頻下載)$"), choose_task)
+            SELECT_ACTION: [
+                MessageHandler(
+                    filters.Regex("^(重推|視頻下載)$") & ~filters.COMMAND, select_action
+                ),
+                CommandHandler("cancel", cancel) # Allow cancel at this step
             ],
-            RESTART_TABLE: [
-                MessageHandler(filters.Regex("^[1-4]$"), restart_table)
+            SELECT_PUSH_SERVER: [
+                MessageHandler(
+                    filters.Regex("^(重推遊戲網視頻 \(A\)|重推飛投視頻 \(B\))$") & ~filters.COMMAND, select_push_server
+                ),
+                CommandHandler("cancel", cancel)
             ],
-            RESTART_CONFIRM: [
-                MessageHandler(filters.Regex("^(是|否)$"), restart_confirm)
+            SELECT_TABLE_FOR_PUSH: [
+                MessageHandler(
+                    filters.Regex("^[1-4]$") & ~filters.COMMAND, select_table_for_push
+                ),
+                CommandHandler("cancel", cancel)
             ],
-            DOWNLOAD_TABLE: [
-                MessageHandler(filters.Regex("^[1-4]$"), download_table)
+            CONFIRM_PUSH: [
+                MessageHandler(
+                    filters.Regex("^(是|否)$") & ~filters.COMMAND, confirm_push
+                ),
+                CommandHandler("cancel", cancel)
             ],
-            DOWNLOAD_TIME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, download_time)
+            SELECT_TABLE_FOR_DOWNLOAD: [
+                MessageHandler(
+                    filters.Regex("^[1-4]$") & ~filters.COMMAND, select_table_for_download
+                ),
+                CommandHandler("cancel", cancel)
             ],
-            DOWNLOAD_CONFIRM_SEND: [
-                MessageHandler(filters.Regex("^(是|否)$"), download_confirm_send)
+            SELECT_DOWNLOAD_TIME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, select_download_time
+                ),
+                CommandHandler("cancel", cancel)
+            ],
+            SELECT_FILE_FOR_DOWNLOAD: [ # New handler for file selection
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, select_file_for_download
+                ),
+                CommandHandler("cancel", cancel)
+            ],
+            CONFIRM_DOWNLOAD: [
+                MessageHandler(
+                    filters.Regex("^(是|否)$") & ~filters.COMMAND, confirm_download
+                ),
+                CommandHandler("cancel", cancel)
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel), MessageHandler(filters.ALL, handle_unauthorized)],
+        fallbacks=[CommandHandler("cancel", cancel)], # Global fallback to cancel
+        allow_reentry=True # 允許用戶在對話中再次發送 /start 來重新開始
     )
 
     application.add_handler(conv_handler)
 
-    # 處理未授權使用者的所有其他訊息
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_unauthorized))
-
-    # 啟動 Bot
-    logger.info("Bot 正在啟動...")
+    # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-    logger.info("Bot 已停止。")
 
 if __name__ == "__main__":
     main()
