@@ -8,19 +8,19 @@ services:
     container_name: cmdtgbot
     environment:
       # Telegram Bot Token - REPLACE WITH YOUR ACTUAL TOKEN OR USE AN ENV FILE
-      - TELEGRAM_BOT_TOKEN=7753926190:AAGiIpvrOGTG7_SSPkPHHm3xMGuypqc44NU
+      - TELEGRAM_BOT_TOKEN=
       # Remote Server User
-      - REMOTE_SERVER_USER=root
+      - REMOTE_SERVER_USER=
       # Video Push Server IP A
-      - VIDEO_PUSH_SERVER_IP_A=10.141.11.201
+      - VIDEO_PUSH_SERVER_IP_A=
       # Video Push Server IP B
-      - VIDEO_PUSH_SERVER_IP_B=10.141.11.202
+      - VIDEO_PUSH_SERVER_IP_B=
       # Video File Server IP (currently not used in bot logic)
-      - VIDEO_FILE_SERVER_IP=10.141.11.201
+      - VIDEO_FILE_SERVER_IP=
       # Password for remote server SSH connection (BE CAREFUL WITH HARDCODING PASSWORDS)
-      - VIDEO_PUSH_SERVER_IP_PASSWORD=BTvide0>>>
+      - VIDEO_PUSH_SERVER_IP_PASSWORD=
       # Comma-separated list of authorized Telegram User IDs
-      - AUTHORIZED_USER_IDS=1028254059,5529798900
+      - AUTHORIZED_USER_IDS=
     restart: unless-stopped
     # Optional: If you need to mount any volumes for persistent data (e.g., logs)
     # volumes:
