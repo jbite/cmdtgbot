@@ -7,13 +7,13 @@ services:
       dockerfile: Dockerfile
     container_name: cmdtgbot
     environment:
-      - TELEGRAM_BOT_TOKEN = "7753926190:AAGiIpvrOGTG7_SSPkPHHm3xMGuypqc44NU"
-      - REMOTE_SERVER_USER = "root"
-      - VIDEO_PUSH_SERVER_IP_A = "10.141.11.201"
-      - VIDEO_PUSH_SERVER_IP_B = "10.141.11.202"
-      - VIDEO_FILE_SERVER_IP = "10.141.11.201"
-      - VIDEO_PUSH_SERVER_IP_PASSWORD = "BTvide0>>>"
-      - AUTHORIZED_USER_IDS = "1028254059,5529798900"
+      - TELEGRAM_BOT_TOKEN = 
+      - REMOTE_SERVER_USER = 
+      - VIDEO_PUSH_SERVER_IP_A = 
+      - VIDEO_PUSH_SERVER_IP_B = 
+      - VIDEO_FILE_SERVER_IP = 
+      - VIDEO_PUSH_SERVER_IP_PASSWORD = 
+      - AUTHORIZED_USER_IDS = 
     restart: unless-stopped
     # Optional: If you need to mount any volumes for persistent data (e.g., logs)
     # volumes:
