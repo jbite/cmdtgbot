@@ -2,19 +2,26 @@ version: '3.8'
 
 services:
   telegram-bot:
-    # Use 'build: .' to build the image from the Dockerfile in the current directory.
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: cmdtgbot
-    restart: unless-stopped # Automatically restart the container unless it's stopped manually.
     environment:
-      # These variables are injected into the container's environment.
-      # The entrypoint.sh script then passes them as command-line arguments to the Python script.
-      # For production, consider using Docker secrets or a more secure way to manage sensitive data.
-      TELEGRAM_BOT_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN" # <<< IMPORTANT: Replace with your actual bot token
-      REMOTE_SERVER_USER: "root"
-      VIDEO_PUSH_SERVER_IP_A: "10.141.11.201"
-      VIDEO_PUSH_SERVER_IP_B: "10.141.11.202"
-      VIDEO_FILE_SERVER_IP: "10.141.11.201" # Assuming this is the same as IP_A for now
-      VIDEO_PUSH_SERVER_IP_PASSWORD: "VIDEO_PUSH_SERVER_IP_PASSWORD" # <<< IMPORTANT: Replace with your actual password
-      AUTHORIZED_USER_IDS: "AUTHORIZED_USER_IDS_1,AUTHORIZED_USER_IDS_2" # <<< IMPORTANT: Replace with your actual Telegram User IDs (e.g., "123456789,987654321")
-   
+      # Telegram Bot Token - REPLACE WITH YOUR ACTUAL TOKEN OR USE AN ENV FILE
+      - TELEGRAM_BOT_TOKEN=7753926190:AAGiIpvrOGTG7_SSPkPHHm3xMGuypqc44NU
+      # Remote Server User
+      - REMOTE_SERVER_USER=root
+      # Video Push Server IP A
+      - VIDEO_PUSH_SERVER_IP_A=10.141.11.201
+      # Video Push Server IP B
+      - VIDEO_PUSH_SERVER_IP_B=10.141.11.202
+      # Video File Server IP (currently not used in bot logic)
+      - VIDEO_FILE_SERVER_IP=10.141.11.201
+      # Password for remote server SSH connection (BE CAREFUL WITH HARDCODING PASSWORDS)
+      - VIDEO_PUSH_SERVER_IP_PASSWORD=BTvide0>>>
+      # Comma-separated list of authorized Telegram User IDs
+      - AUTHORIZED_USER_IDS=1028254059,5529798900
+    restart: unless-stopped
+    # Optional: If you need to mount any volumes for persistent data (e.g., logs)
+    # volumes:
+    #   - ./logs:/app/logs
